@@ -1,0 +1,31 @@
+replicaCount: 1
+
+image:
+  repository: ghcr.io/andriesh/telegram-bridge
+  tag: latest
+  pullPolicy: IfNotPresent
+
+service:
+  type: ClusterIP
+  port: 8080
+
+env:
+  BOT_TOKEN: ""
+  CHAT_ID: ""
+
+ingress:
+  enabled: false
+  className: nginx
+  annotations: {}
+  hosts:
+    - host: bridge.local
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+# tls:
+#   - secretName: bridge-tls
+#     hosts:
+#       - bridge.local
+
+resources: {}

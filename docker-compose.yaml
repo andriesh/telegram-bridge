@@ -1,0 +1,8 @@
+services:
+  discord-telegram-bridge:
+    build: .
+    ports:
+      - "8080:8080"
+    environment:
+      BOT_TOKEN: "7348825247:AAEIENwLpaMKBVLDTURt9zJkG8FYzbHkf_Q"
+      CHAT_ID: "-1003955291725"

@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "telegram-bridge.fullname" . }}
+spec:
+  selector:
+    app: {{ include "telegram-bridge.name" . }}
+  ports:
+    - port: 8080
+      targetPort: 8080
+  type: {{ .Values.service.type }}

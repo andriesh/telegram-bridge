@@ -1,0 +1,25 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "telegram-bridge.fullname" . }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      app: {{ include "telegram-bridge.name" . }}
+  template:
+    metadata:
+      labels:
+        app: {{ include "telegram-bridge.name" . }}
+    spec:
+      containers:
+        - name: app
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - containerPort: 8080
+          env:
+            - name: BOT_TOKEN
+              value: "{{ .Values.env.BOT_TOKEN }}"
+            - name: CHAT_ID
+              value: "{{ .Values.env.CHAT_ID }}"
