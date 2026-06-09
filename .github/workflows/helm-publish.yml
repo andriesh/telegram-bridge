@@ -1,0 +1,39 @@
+name: publish-helm-chart
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  helm:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.14.0
+
+      - name: Login to GHCR (Helm OCI)
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io \
+            -u ${{ github.actor }} \
+            --password-stdin
+
+      - name: Package chart
+        run: |
+          helm dependency update chart/telegram-bridge || true
+          helm package chart/telegram-bridge --destination .
+
+      - name: Push chart to GHCR (OCI)
+        run: |
+          CHART_FILE=$(ls telegram-bridge-*.tgz)
+          helm push "$CHART_FILE" oci://ghcr.io/${{ github.repository_owner }}/charts
