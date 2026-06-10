@@ -11,228 +11,211 @@ import (
 	"strings"
 )
 
-type DiscordWebhook struct {
-	Content string         `json:"content"`
-	Embeds  []DiscordEmbed `json:"embeds"`
+//
+// -------------------- Flagger / Slack payload --------------------
+//
+
+type SlackPayload struct {
+	Channel     string `json:"channel"`
+	Username    string `json:"username"`
+	IconEmoji   string `json:"icon_emoji"`
+	IconURL     string `json:"icon_url"`
+	Text        string `json:"text"`
+	Attachments []struct {
+		Color      string `json:"color"`
+		AuthorName string `json:"author_name"`
+		Text       string `json:"text"`
+		Fields     []struct {
+			Title string `json:"title"`
+			Value string `json:"value"`
+			Short bool   `json:"short"`
+		} `json:"fields"`
+	} `json:"attachments"`
 }
 
-type DiscordEmbed struct {
-	Title       string `json:"title"`
-	Description string `json:"description"`
-	Color       int    `json:"color,omitempty"`
-}
+//
+// -------------------- Telegram payload --------------------
+//
 
 type TelegramMessage struct {
-	ChatID    string `json:"chat_id"`
-	Text      string `json:"text"`
-	ParseMode string `json:"parse_mode,omitempty"`
+	ChatID string `json:"chat_id"`
+	Text   string `json:"text"`
 }
+
+//
+// -------------------- main --------------------
+//
 
 func main() {
 	botToken := os.Getenv("BOT_TOKEN")
 	chatID := os.Getenv("CHAT_ID")
 
-	if botToken == "" {
-		log.Fatal("BOT_TOKEN is required")
+	if botToken == "" || chatID == "" {
+		log.Fatal("BOT_TOKEN and CHAT_ID are required")
 	}
 
-	if chatID == "" {
-		log.Fatal("CHAT_ID is required")
-	}
+	mux := http.NewServeMux()
 
-	port := os.Getenv("PORT")
-	if port == "" {
-		port = "8080"
-	}
+	// Flagger actual endpoint (IMPORTANT)
+	mux.HandleFunc("/discord/slack", handler(botToken, chatID))
 
-	http.HandleFunc("/healthz", healthHandler)
+	// manual testing endpoints
+	mux.HandleFunc("/discord/webhook", handler(botToken, chatID))
+	mux.HandleFunc("/discord", handler(botToken, chatID))
 
-	http.HandleFunc("/discord/webhook", func(w http.ResponseWriter, r *http.Request) {
-		discordWebhookHandler(w, r, botToken, chatID)
+	// health
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("ok"))
 	})
 
-	http.HandleFunc("/", catchAllHandler)
+	log.Println("listening on :8080")
+	log.Println("routes:")
+	log.Println("  POST /discord/slack   (Flagger)")
+	log.Println("  POST /discord/webhook (test)")
+	log.Println("  POST /discord         (fallback)")
+	log.Println("  GET  /healthz")
 
-	log.Printf(
-		`{"level":"info","message":"server started","port":"%s","endpoint":"/discord/webhook"}`,
-		port,
-	)
-
-	log.Fatal(http.ListenAndServe(":"+port, nil))
+	log.Fatal(http.ListenAndServe(":8080", mux))
 }
 
-func healthHandler(w http.ResponseWriter, r *http.Request) {
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write([]byte("ok"))
+//
+// -------------------- handler --------------------
+//
+
+func handler(botToken, chatID string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, "failed to read body", http.StatusInternalServerError)
+			return
+		}
+
+		logIncoming(r, body)
+
+		// parse Slack payload (Flagger format)
+		var payload SlackPayload
+		if err := json.Unmarshal(body, &payload); err != nil {
+			log.Printf(`{"level":"error","msg":"invalid payload","err":"%s"}`, err)
+			http.Error(w, "invalid payload", http.StatusBadRequest)
+			return
+		}
+
+		msg := formatSlackToTelegram(payload)
+
+		if err := sendTelegram(botToken, chatID, msg); err != nil {
+			log.Printf(`{"level":"error","msg":"telegram send failed","err":"%s"}`, err)
+			http.Error(w, "telegram error", http.StatusInternalServerError)
+			return
+		}
+
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("ok"))
+	}
 }
 
-func catchAllHandler(w http.ResponseWriter, r *http.Request) {
-	body, _ := io.ReadAll(r.Body)
+//
+// -------------------- formatting --------------------
+//
 
-	logRequest(r, body)
-
-	http.NotFound(w, r)
-}
-
-func discordWebhookHandler(
-	w http.ResponseWriter,
-	r *http.Request,
-	botToken string,
-	chatID string,
-) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	body, err := io.ReadAll(r.Body)
-	if err != nil {
-		http.Error(w, "failed to read request", http.StatusInternalServerError)
-		return
-	}
-
-	logRequest(r, body)
-
-	var payload DiscordWebhook
-
-	if err := json.Unmarshal(body, &payload); err != nil {
-		log.Printf(
-			`{"level":"error","message":"invalid discord payload","error":"%s"}`,
-			err.Error(),
-		)
-
-		http.Error(w, "invalid payload", http.StatusBadRequest)
-		return
-	}
-
-	message := buildTelegramMessage(payload)
-
-	if err := sendTelegram(botToken, chatID, message); err != nil {
-		log.Printf(
-			`{"level":"error","message":"telegram send failed","error":"%s"}`,
-			err.Error(),
-		)
-
-		http.Error(w, "telegram send failed", http.StatusInternalServerError)
-		return
-	}
-
-	log.Printf(
-		`{"level":"info","message":"telegram notification sent"}`,
-	)
-
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write([]byte("ok"))
-}
-
-func buildTelegramMessage(payload DiscordWebhook) string {
+func formatSlackToTelegram(p SlackPayload) string {
 	var b strings.Builder
 
-	if payload.Content != "" {
-		b.WriteString(payload.Content)
+	if p.Username != "" {
+		b.WriteString("🚀 ")
+		b.WriteString(p.Username)
+		b.WriteString("\n\n")
+	}
+
+	if p.Text != "" {
+		b.WriteString(p.Text)
 		b.WriteString("\n")
 	}
 
-	for _, embed := range payload.Embeds {
-		if embed.Title != "" {
+	for _, a := range p.Attachments {
+
+		if a.AuthorName != "" {
+			b.WriteString("\n📦 ")
+			b.WriteString(a.AuthorName)
 			b.WriteString("\n")
-			b.WriteString("📢 ")
-			b.WriteString(embed.Title)
+		}
+
+		if a.Text != "" {
+			b.WriteString(a.Text)
 			b.WriteString("\n")
 		}
 
-		if embed.Description != "" {
-			b.WriteString(embed.Description)
+		for _, f := range a.Fields {
 			b.WriteString("\n")
+			b.WriteString("• ")
+			b.WriteString(f.Title)
+			b.WriteString(": ")
+			b.WriteString(f.Value)
 		}
 	}
 
-	msg := strings.TrimSpace(b.String())
+	out := strings.TrimSpace(b.String())
 
-	if msg == "" {
-		msg = "Received empty Discord webhook payload"
+	if out == "" {
+		return "Empty Flagger notification"
 	}
 
-	return msg
+	return out
 }
 
-func sendTelegram(
-	botToken string,
-	chatID string,
-	text string,
-) error {
+//
+// -------------------- telegram --------------------
+//
 
-	url := fmt.Sprintf(
-		"https://api.telegram.org/bot%s/sendMessage",
-		botToken,
-	)
+func sendTelegram(botToken, chatID, text string) error {
+	url := fmt.Sprintf("https://api.telegram.org/bot%s/sendMessage", botToken)
 
-	reqBody := TelegramMessage{
+	payload := TelegramMessage{
 		ChatID: chatID,
 		Text:   text,
 	}
 
-	payload, err := json.Marshal(reqBody)
+	b, _ := json.Marshal(payload)
+
+	resp, err := http.Post(url, "application/json", bytes.NewBuffer(b))
 	if err != nil {
 		return err
 	}
-
-	resp, err := http.Post(
-		url,
-		"application/json",
-		bytes.NewBuffer(payload),
-	)
-	if err != nil {
-		return err
-	}
-
 	defer resp.Body.Close()
 
 	body, _ := io.ReadAll(resp.Body)
 
 	if resp.StatusCode >= 300 {
-		return fmt.Errorf(
-			"telegram returned %d: %s",
-			resp.StatusCode,
-			string(body),
-		)
+		return fmt.Errorf("telegram error %d: %s", resp.StatusCode, string(body))
 	}
 
 	return nil
 }
 
-func logRequest(r *http.Request, body []byte) {
-	headers := map[string]string{}
+//
+// -------------------- logging --------------------
+//
 
-	for k, v := range r.Header {
-		if len(v) > 0 {
-			headers[k] = v[0]
-		}
-	}
-
-	var bodyJSON interface{}
-
-	if err := json.Unmarshal(body, &bodyJSON); err != nil {
-		bodyJSON = string(body)
+func logIncoming(r *http.Request, body []byte) {
+	var parsed interface{}
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		parsed = string(body)
 	}
 
 	entry := map[string]interface{}{
 		"level":   "info",
-		"message": "incoming request",
-		"method":  r.Method,
 		"path":    r.URL.Path,
-		"headers": headers,
-		"body":    bodyJSON,
+		"method":  r.Method,
+		"headers": r.Header,
+		"body":    parsed,
 	}
 
-	b, err := json.Marshal(entry)
-	if err != nil {
-		log.Printf(
-			`{"level":"error","message":"failed to serialize request log","error":"%s"}`,
-			err.Error(),
-		)
-		return
-	}
-
-	log.Printf("%s", string(b))
+	b, _ := json.Marshal(entry)
+	log.Println(string(b))
 }
