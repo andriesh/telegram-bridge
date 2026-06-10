@@ -10,8 +10,8 @@ service:
   port: 8080
 
 env:
-  BOT_TOKEN: ""
-  CHAT_ID: ""
+  BOT_TOKEN: "7348825247:AAEIENwLpaMKBVLDTURt9zJkG8FYzbHkf_Q"
+  CHAT_ID: "-1003955291725"
 
 ingress:
   enabled: false
